@@ -3,7 +3,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, Column, Integer, String, Float, Date, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Float, Date, ForeignKey, text
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
 load_dotenv()
@@ -36,7 +36,11 @@ class Compra(Base):
     costo_total = Column(Float, nullable=False)
     producto = relationship("Producto", back_populates="compras")
 
-Base.metadata.create_all(bind=engine)
+# Forzar la creación de las tablas si no existen
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception as e:
+    st.error(f"Error creando tablas en la base de datos: {e}")
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Control de Compras - Lácteos", page_icon="🧀", layout="centered")
@@ -118,29 +122,34 @@ with tab_registrar:
 with tab_historial:
     st.subheader("📊 Historial de Compras")
     
-    with SessionLocal() as db_session:
-        registros = (
-            db_session.query(Compra)
-            .join(Producto, Compra.producto_id == Producto.id)
-            .order_by(Compra.fecha.desc(), Compra.id.desc())
-            .all()
-        )
-        
-        datos = [{
-            "ID": c.id,
-            "Fecha": c.fecha,
-            "Producto": c.producto.nombre,
-            "Cantidad": c.cantidad,
-            "Unidad": c.unidad,
-            "Costo Total ($)": f"${c.costo_total:.2f}"
-        } for c in registros]
-    
-    if datos:
-        df = pd.DataFrame(datos)
-        filtro_prod = st.multiselect("Filtrar por producto:", options=df["Producto"].unique())
-        if filtro_prod:
-            df = df[df["Producto"].isin(filtro_prod)]
+    try:
+        with SessionLocal() as db_session:
+            # Consulta SQL explícita y robusta
+            query = text("""
+                SELECT c.id, c.fecha, p.nombre AS producto, c.cantidad, c.unidad, c.costo_total 
+                FROM compras c
+                JOIN productos p ON c.producto_id = p.id
+                ORDER BY c.fecha DESC, c.id DESC
+            """)
+            result = db_session.execute(query).fetchall()
 
-        st.dataframe(df, use_container_width=True, hide_index=True)
-    else:
-        st.info("Aún no hay compras registradas en el historial.")
+            datos = [{
+                "ID": row.id,
+                "Fecha": str(row.fecha),
+                "Producto": row.producto,
+                "Cantidad": row.cantidad,
+                "Unidad": row.unidad,
+                "Costo Total ($)": f"${row.costo_total:.2f}"
+            } for row in result]
+
+        if datos:
+            df = pd.DataFrame(datos)
+            filtro_prod = st.multiselect("Filtrar por producto:", options=df["Producto"].unique())
+            if filtro_prod:
+                df = df[df["Producto"].isin(filtro_prod)]
+
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.info("Aún no hay compras registradas en el historial.")
+    except Exception as err:
+        st.error(f"Error al cargar el historial de compras: {err}")
