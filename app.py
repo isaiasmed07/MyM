@@ -1,6 +1,7 @@
 import os
 import streamlit as st
 import pandas as pd
+import bcrypt
 from datetime import date
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, Integer, String, Float, Date, ForeignKey, text
@@ -20,6 +21,13 @@ SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
 # --- MODELOS ---
+class Usuario(Base):
+    __tablename__ = 'usuarios'
+    id = Column(Integer, primary_key=True)
+    username = Column(String, unique=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    role = Column(String, nullable=False) # 'Admin' o 'Usuario'
+
 class Producto(Base):
     __tablename__ = 'productos'
     id = Column(Integer, primary_key=True)
@@ -38,14 +46,34 @@ class Compra(Base):
 
 Base.metadata.create_all(bind=engine)
 
+# --- FUNCIONES DE SEGURIDAD Y SEMBRADO ---
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+
+def check_password(password: str, hashed: str) -> bool:
+    return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
+
+def seed_users():
+    """Crea los usuarios iniciales si la tabla de usuarios está vacía."""
+    with SessionLocal() as db:
+        if db.query(Usuario).count() == 0:
+            admin_user = Usuario(
+                username="admin",
+                password_hash=hash_password("admin123"),
+                role="Admin"
+            )
+            standard_user = Usuario(
+                username="usuario",
+                password_hash=hash_password("user123"),
+                role="Usuario"
+            )
+            db.add_all([admin_user, standard_user])
+            db.commit()
+
+seed_users()
+
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Control de Compras - Lácteos", page_icon="🧀", layout="centered")
-
-# --- SISTEMA DE LOGIN Y ROLES ---
-USUARIOS = {
-    "admin": {"password": "admin123password", "role": "Admin"},
-    "usuario": {"password": "user123password", "role": "Usuario"}
-}
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -60,14 +88,16 @@ def login():
         submit = st.form_submit_button("Ingresar", type="primary", use_container_width=True)
         
         if submit:
-            if user_input in USUARIOS and USUARIOS[user_input]["password"] == pass_input:
-                st.session_state.logged_in = True
-                st.session_state.user_role = USUARIOS[user_input]["role"]
-                st.session_state.username = user_input
-                st.toast(f"¡Bienvenido, {user_input}!", icon="👋")
-                st.rerun()
-            else:
-                st.error("Usuario o contraseña incorrectos.")
+            with SessionLocal() as db:
+                usuario_db = db.query(Usuario).filter(Usuario.username == user_input).first()
+                if usuario_db and check_password(pass_input, usuario_db.password_hash):
+                    st.session_state.logged_in = True
+                    st.session_state.user_role = usuario_db.role
+                    st.session_state.username = usuario_db.username
+                    st.toast(f"¡Bienvenido, {usuario_db.username}!", icon="👋")
+                    st.rerun()
+                else:
+                    st.error("Usuario o contraseña incorrectos.")
 
 def logout():
     st.session_state.logged_in = False
@@ -75,12 +105,11 @@ def logout():
     st.session_state.username = None
     st.rerun()
 
-# Si no ha iniciado sesión, mostrar login y detener la ejecución
 if not st.session_state.logged_in:
     login()
     st.stop()
 
-# --- BARRA LATERAL (INFORMACIÓN DE SESIÓN) ---
+# --- BARRA LATERAL (SESIÓN) ---
 with st.sidebar:
     st.write(f"👤 **Usuario:** {st.session_state.username.capitalize()}")
     st.write(f"🔑 **Rol:** {st.session_state.user_role}")
@@ -89,9 +118,8 @@ with st.sidebar:
 
 st.title("🧀 Control de Compras de Lácteos")
 
-# Definir pestañas según el rol
 if st.session_state.user_role == "Admin":
-    tab_registrar, tab_historial, tab_productos = st.tabs(["📝 Registrar Compra", "📊 Historial / Editar", "🏷️ Productos"])
+    tab_registrar, tab_historial, tab_productos, tab_usuarios = st.tabs(["📝 Registrar Compra", "📊 Historial / Editar", "🏷️ Productos", "👥 Usuarios"])
 else:
     tab_registrar, tab_historial = st.tabs(["📝 Registrar Compra", "📊 Historial Completo"])
 
@@ -145,7 +173,7 @@ with tab_registrar:
                     st.rerun()
 
 # ==========================================
-# PESTAÑA 2: HISTORIAL (Y EDICIÓN SI ES ADMIN)
+# PESTAÑA 2: HISTORIAL COMPLETO Y EDICIÓN
 # ==========================================
 with tab_historial:
     st.subheader("📊 Historial de Compras")
@@ -178,7 +206,6 @@ with tab_historial:
 
             st.dataframe(df, use_container_width=True, hide_index=True)
 
-            # Opciones de Edición/Eliminación solo visibles para el Admin
             if st.session_state.user_role == "Admin":
                 st.markdown("---")
                 st.subheader("⚙️ Modificar o Eliminar Registro (Admin)")
@@ -233,7 +260,7 @@ with tab_historial:
             st.info("Aún no hay compras registradas en el historial.")
 
 # ==========================================
-# PESTAÑA 3: GESTIÓN DE PRODUCTOS (SOLO ADMIN)
+# PESTAÑA 3: PRODUCTOS (SOLO ADMIN)
 # ==========================================
 if st.session_state.user_role == "Admin":
     with tab_productos:
@@ -270,4 +297,52 @@ if st.session_state.user_role == "Admin":
                                 db_session.delete(p)
                                 db_session.commit()
                                 st.toast(f"Producto '{p.nombre}' eliminado.", icon="🗑️")
+                                st.rerun()
+
+# ==========================================
+# PESTAÑA 4: GESTIÓN DE USUARIOS (SOLO ADMIN)
+# ==========================================
+    with tab_usuarios:
+        st.subheader("👥 Administración de Usuarios")
+        
+        with SessionLocal() as db_session:
+            with st.form("form_nuevo_usuario", clear_on_submit=True):
+                st.write("**Crear Nuevo Usuario**")
+                new_username = st.text_input("Nombre de Usuario").strip().lower()
+                new_password = st.text_input("Contraseña", type="password")
+                new_role = st.selectbox("Rol", options=["Usuario", "Admin"])
+                
+                if st.form_submit_button("➕ Registrar Usuario"):
+                    if new_username and new_password:
+                        user_exists = db_session.query(Usuario).filter(Usuario.username == new_username).first()
+                        if user_exists:
+                            st.warning("El usuario ya existe.")
+                        else:
+                            nuevo_u = Usuario(
+                                username=new_username,
+                                password_hash=hash_password(new_password),
+                                role=new_role
+                            )
+                            db_session.add(nuevo_u)
+                            db_session.commit()
+                            st.toast(f"Usuario '{new_username}' registrado correctamente.", icon="✅")
+                            st.rerun()
+                    else:
+                        st.error("Completa todos los campos.")
+            
+            st.markdown("---")
+            st.write("**Usuarios Existentes:**")
+            users_list = db_session.query(Usuario).all()
+            for u in users_list:
+                col_u1, col_u2 = st.columns([3, 1])
+                with col_u1:
+                    st.write(f"• **{u.username.capitalize()}** ({u.role})")
+                with col_u2:
+                    if u.username != st.session_state.username: # Prevenir auto-eliminación
+                        with st.popover("🗑️ Borrar", use_container_width=True):
+                            st.warning(f"¿Eliminar usuario '{u.username}'?")
+                            if st.button("Confirmar", key=f"del_user_{u.id}", use_container_width=True):
+                                db_session.delete(u)
+                                db_session.commit()
+                                st.toast(f"Usuario '{u.username}' eliminado.", icon="🗑️")
                                 st.rerun()
