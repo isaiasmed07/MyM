@@ -36,15 +36,25 @@ class Compra(Base):
     costo_total = Column(Float, nullable=False)
     producto = relationship("Producto", back_populates="compras")
 
-# Forzar la creación de las tablas si no existen
+# --- ACTUALIZACIÓN DE ESTRUCTURA EN PRUEBAS ---
+# Para asegurarse de que las tablas se creen con las nuevas columnas
 try:
     Base.metadata.create_all(bind=engine)
 except Exception as e:
-    st.error(f"Error creando tablas en la base de datos: {e}")
+    st.error(f"Error creando tablas: {e}")
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Control de Compras - Lácteos", page_icon="🧀", layout="centered")
 st.title("🧀 Control de Compras de Lácteos")
+
+# Botón temporal para reiniciar la base de datos si cambian las columnas
+with st.sidebar:
+    st.subheader("🛠️ Herramientas de Desarrollo")
+    if st.button("⚠️ Recrear Tablas (Borra datos)"):
+        Base.metadata.drop_all(bind=engine)
+        Base.metadata.create_all(bind=engine)
+        st.success("Tablas recreadas con la nueva estructura. Recarga la página.")
+        st.rerun()
 
 # --- PESTAÑAS / NAVEGACIÓN ---
 tab_registrar, tab_historial = st.tabs(["📝 Registrar Compra", "📊 Historial Completo"])
@@ -124,7 +134,6 @@ with tab_historial:
     
     try:
         with SessionLocal() as db_session:
-            # Consulta SQL explícita y robusta
             query = text("""
                 SELECT c.id, c.fecha, p.nombre AS producto, c.cantidad, c.unidad, c.costo_total 
                 FROM compras c
