@@ -1,174 +1,146 @@
-import datetime
 import os
-import pandas as pd
 import streamlit as st
+import pandas as pd
+from datetime import date
 from dotenv import load_dotenv
-from sqlalchemy import Column, Date, ForeignKey, Integer, Numeric, String, create_engine
-from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from sqlalchemy import create_engine, Column, Integer, String, Float, Date, ForeignKey
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 
-# 1. Cargar variables de entorno
 load_dotenv()
+
+# --- CONEXIÓN BASE DE DATOS ---
 DATABASE_URL = os.getenv("DATABASE_URL")
-
-if not DATABASE_URL:
-    st.error("❌ No se encontró DATABASE_URL en el archivo .env")
-    st.stop()
-
-# 2. Configurar SQLAlchemy
-Base = declarative_base()
-
-
-class Producto(Base):
-    __tablename__ = "productos"
-    id = Column(Integer, primary_key=True)
-    nombre = Column(String(100), unique=True, nullable=False)
-    unidad_medida = Column(String(20), nullable=False)
-    compras = relationship("Compra", back_populates="producto")
-
-
-class Compra(Base):
-    __tablename__ = "compras"
-    id = Column(Integer, primary_key=True)
-    producto_id = Column(Integer, ForeignKey("productos.id"), nullable=False)
-    fecha = Column(Date, nullable=False)
-    cantidad = Column(Numeric(10, 2), nullable=False)
-    unidad_usada = Column(String(20), nullable=False)
-    costo_total = Column(Numeric(10, 2), nullable=False)
-    producto = relationship("Producto", back_populates="compras")
-
 
 @st.cache_resource
 def get_engine():
-    return create_engine(DATABASE_URL, pool_pre_ping=True)
-
+    return create_engine(DATABASE_URL)
 
 engine = get_engine()
 SessionLocal = sessionmaker(bind=engine)
+Base = declarative_base()
 
-# 3. Interfaz de Streamlit
-st.set_page_config(
-    page_title="Control de Compras - Lácteos",
-    page_icon="🧀",
-    layout="centered"
-)
+# --- MODELOS ---
+class Producto(Base):
+    __tablename__ = 'productos'
+    id = Column(Integer, primary_key=True)
+    nombre = Column(String, unique=True, nullable=False)
+    compras = relationship("Compra", back_populates="producto")
 
+class Compra(Base):
+    __tablename__ = 'compras'
+    id = Column(Integer, primary_key=True)
+    fecha = Column(Date, nullable=False)
+    producto_id = Column(Integer, ForeignKey('productos.id'), nullable=False)
+    cantidad = Column(Float, nullable=False)
+    unidad = Column(String, nullable=False)
+    costo_total = Column(Float, nullable=False)
+    producto = relationship("Producto", back_populates="compras")
+
+Base.metadata.create_all(bind=engine)
+
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="Control de Compras - Lácteos", page_icon="🧀", layout="centered")
 st.title("🧀 Control de Compras de Lácteos")
 
-session = SessionLocal()
+# --- PESTAÑAS / NAVEGACIÓN ---
+tab_registrar, tab_historial = st.tabs(["📝 Registrar Compra", "📊 Historial Completo"])
 
-# --- FORMULARIO: NUEVO PRODUCTO ---
-with st.expander("➕ Crear Nuevo Producto (Haz clic aquí si no existe en la lista)"):
-    with st.form("form_nuevo_producto", clear_on_submit=True):
-        nuevo_nombre = st.text_input(
-            "Nombre del Producto", placeholder="Ej: Cuajada"
-        )
-        nueva_unidad = st.selectbox(
-            "Unidad de Medida por Defecto", ["Libras", "Unidades", "Litros"]
-        )
-        btn_crear_prod = st.form_submit_button("Guardar Producto")
+db_session = SessionLocal()
 
-        if btn_crear_prod:
-            nombre_limpio = nuevo_nombre.strip().capitalize()
-            if nombre_limpio:
-                try:
-                    prod = Producto(
-                        nombre=nombre_limpio,
-                        unidad_medida=nueva_unidad
-                    )
-                    session.add(prod)
-                    session.commit()
-                    st.success(f"✅ Producto '{nombre_limpio}' registrado.")
+# ==========================================
+# PESTAÑA 1: REGISTRAR COMPRA
+# ==========================================
+with tab_registrar:
+    # 1. Crear Nuevo Producto
+    with st.expander("➕ Crear Nuevo Producto (Haz clic aquí si no existe en la lista)"):
+        nuevo_prod_nombre = st.text_input("Nombre del Nuevo Producto", key="input_nuevo_prod")
+        if st.button("Guardar Producto"):
+            if nuevo_prod_nombre.strip():
+                prod_existente = db_session.query(Producto).filter(Producto.nombre.ilike(nuevo_prod_nombre.strip())).first()
+                if prod_existente:
+                    st.warning("Este producto ya existe en el sistema.")
+                else:
+                    nuevo_p = Producto(nombre=nuevo_prod_nombre.strip())
+                    db_session.add(nuevo_p)
+                    db_session.commit()
+                    st.success(f"¡Producto '{nuevo_prod_nombre}' creado con éxito!")
                     st.rerun()
-                except Exception:
-                    session.rollback()
-                    st.error("⚠️ El producto ya existe o falló la conexión.")
             else:
-                st.warning("⚠️ Escribe un nombre válido.")
+                st.error("Escribe un nombre válido para el producto.")
 
-# --- FORMULARIO: REGISTRO DE COMPRA ---
-st.subheader("📝 Registrar Nueva Compra")
+    st.subheader("📝 Registrar Nueva Compra")
+    
+    productos_db = db_session.query(Producto).order_by(Producto.nombre).all()
+    opciones_productos = {p.nombre: p.id for p in productos_db}
 
-productos_db = session.query(Producto).order_by(Producto.nombre).all()
-opciones_productos = {p.nombre: p for p in productos_db}
-
-if not opciones_productos:
-    st.info("No hay productos registrados. Agrega uno en la sección de arriba.")
-else:
-    with st.form("form_compra", clear_on_submit=True):
-        # Fecha
-        fecha_compra = st.date_input("Fecha de Compra", value=datetime.date.today())
-
-        # Producto
-        prod_seleccionado = st.selectbox(
-            "Seleccionar Producto", list(opciones_productos.keys())
-        )
-        prod_obj = opciones_productos[prod_seleccionado]
-
+    if not opciones_productos:
+        st.info("No hay productos registrados aún. Crea uno arriba para empezar.")
+    else:
+        # Formulario de entrada
+        fecha_compra = st.date_input("Fecha de Compra", value=date.today())
+        producto_sel = st.selectbox("Seleccionar Producto", options=list(opciones_productos.keys()), index=None, placeholder="Elige un producto...")
+        
         col1, col2 = st.columns(2)
-
-        # Cantidad y Unidad
         with col1:
-            cantidad = st.number_input(
-                "Cantidad Comprada", min_value=0.01, step=1.0, format="%.2f"
-            )
-
+            cantidad = st.number_input("Cantidad Comprada", min_value=0.0, value=0.0, step=0.5)
         with col2:
-            idx_default = 0 if prod_obj.unidad_medida == "Libras" else 1
-            unidad = st.selectbox(
-                "Unidad",
-                ["Libras", "Unidades", "Litros"],
-                index=idx_default
-            )
+            unidad = st.selectbox("Unidad", options=["Libras", "Kilos", "Unidades", "Bloques", "Litros"])
 
-        # Costo Total
-        costo_total = st.number_input(
-            "Costo Total ($)", min_value=0.01, step=1.0, format="%.2f"
-        )
+        costo_total = st.number_input("Costo Total ($)", min_value=0.0, value=0.0, step=1.0)
 
-        btn_guardar = st.form_submit_button("💾 Guardar Compra")
+        # Confirmación usando st.popover
+        st.write("")
+        with st.popover("💾 Guardar Compra", use_container_width=True):
+            st.markdown("**¿Confirmar el registro de la compra?**")
+            st.write(f"- **Producto:** {producto_sel}")
+            st.write(f"- **Cantidad:** {cantidad} {unidad}")
+            st.write(f"- **Total:** ${costo_total:.2f}")
+            
+            if st.button("Sí, Confirmar y Guardar", type="primary", use_container_width=True):
+                if not producto_sel:
+                    st.error("Por favor selecciona un producto.")
+                elif cantidad <= 0 or costo_total <= 0:
+                    st.error("La cantidad y el costo deben ser mayores a 0.")
+                else:
+                    nueva_compra = Compra(
+                        fecha=fecha_compra,
+                        producto_id=opciones_productos[producto_sel],
+                        cantidad=cantidad,
+                        unidad=unidad,
+                        costo_total=costo_total
+                    )
+                    db_session.add(nueva_compra)
+                    db_session.commit()
+                    st.toast("¡Compra guardada con éxito!", icon="✅")
+                    st.rerun()
 
-        if btn_guardar:
-            try:
-                nueva_compra = Compra(
-                    producto_id=prod_obj.id,
-                    fecha=fecha_compra,
-                    cantidad=cantidad,
-                    unidad_usada=unidad,
-                    costo_total=costo_total,
-                )
-                session.add(nueva_compra)
-                session.commit()
-                st.success(
-                    f"✅ Registrado: {cantidad} {unidad} de {prod_obj.nombre} por ${costo_total:.2f}"
-                )
-                st.rerun()
-            except Exception as e:
-                session.rollback()
-                st.error(f"Error al guardar la compra: {e}")
+# ==========================================
+# PESTAÑA 2: HISTORIAL COMPLETO
+# ==========================================
+with tab_historial:
+    st.subheader("📊 Historial de Compras")
+    
+    registros = db_session.query(Compra).join(Producto).order_by(Compra.fecha.desc(), Compra.id.desc()).all()
+    
+    if registros:
+        datos = [{
+            "ID": c.id,
+            "Fecha": c.fecha,
+            "Producto": c.producto.nombre,
+            "Cantidad": c.cantidad,
+            "Unidad": c.unidad,
+            "Costo Total ($)": f"${c.costo_total:.2f}"
+        } for c in registros]
+        
+        df = pd.DataFrame(datos)
+        
+        # Filtro rápido por producto
+        filtro_prod = st.multiselect("Filtrar por producto:", options=df["Producto"].unique())
+        if filtro_prod:
+            df = df[df["Producto"].isin(filtro_prod)]
 
-# --- HISTORIAL DE COMPRAS ---
-st.markdown("---")
-st.subheader("📊 Historial Reciente")
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.info("Aún no hay compras registradas en el historial.")
 
-compras_query = (
-    session.query(
-        Compra.fecha,
-        Producto.nombre,
-        Compra.cantidad,
-        Compra.unidad_usada,
-        Compra.costo_total,
-    )
-    .join(Producto)
-    .order_by(Compra.fecha.desc(), Compra.id.desc())
-    .limit(10)
-    .all()
-)
-
-if compras_query:
-    df = pd.DataFrame(
-        compras_query,
-        columns=["Fecha", "Producto", "Cantidad", "Unidad", "Costo Total ($)"],
-    )
-    st.dataframe(df, use_container_width=True)
-
-session.close()
+db_session.close()
