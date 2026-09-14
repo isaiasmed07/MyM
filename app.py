@@ -2,7 +2,7 @@ import os
 import streamlit as st
 import pandas as pd
 import bcrypt
-from datetime import date
+from datetime import date, timedelta
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, Integer, String, Float, Date, ForeignKey, text
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
@@ -26,7 +26,7 @@ class Usuario(Base):
     id = Column(Integer, primary_key=True)
     username = Column(String, unique=True, nullable=False)
     password_hash = Column(String, nullable=False)
-    role = Column(String, nullable=False) # 'Admin' o 'Usuario'
+    role = Column(String, nullable=False)
 
 class Producto(Base):
     __tablename__ = 'productos'
@@ -46,7 +46,7 @@ class Compra(Base):
 
 Base.metadata.create_all(bind=engine)
 
-# --- FUNCIONES DE SEGURIDAD Y SEMBRADO ---
+# --- SEGURIDAD ---
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
@@ -54,26 +54,17 @@ def check_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode('utf-8'), hashed.encode('utf-8'))
 
 def seed_users():
-    """Crea los usuarios iniciales si la tabla de usuarios está vacía."""
     with SessionLocal() as db:
         if db.query(Usuario).count() == 0:
-            admin_user = Usuario(
-                username="admin",
-                password_hash=hash_password("admin123"),
-                role="Admin"
-            )
-            standard_user = Usuario(
-                username="usuario",
-                password_hash=hash_password("user123"),
-                role="Usuario"
-            )
+            admin_user = Usuario(username="admin", password_hash=hash_password("admin123"), role="Admin")
+            standard_user = Usuario(username="usuario", password_hash=hash_password("user123"), role="Usuario")
             db.add_all([admin_user, standard_user])
             db.commit()
 
 seed_users()
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Control de Compras - Lácteos", page_icon="🧀", layout="centered")
+st.set_page_config(page_title="Control de Compras - Lácteos", page_icon="🧀", layout="wide")
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -109,7 +100,7 @@ if not st.session_state.logged_in:
     login()
     st.stop()
 
-# --- BARRA LATERAL (SESIÓN) ---
+# --- BARRA LATERAL ---
 with st.sidebar:
     st.write(f"👤 **Usuario:** {st.session_state.username.capitalize()}")
     st.write(f"🔑 **Rol:** {st.session_state.user_role}")
@@ -118,10 +109,85 @@ with st.sidebar:
 
 st.title("🧀 Control de Compras de Lácteos")
 
+# Definir pestañas con Dashboard primero
 if st.session_state.user_role == "Admin":
-    tab_registrar, tab_historial, tab_productos, tab_usuarios = st.tabs(["📝 Registrar Compra", "📊 Historial / Editar", "🏷️ Productos", "👥 Usuarios"])
+    tab_dash, tab_registrar, tab_historial, tab_productos, tab_usuarios = st.tabs([
+        "📈 Dashboard / Auditoría", "📝 Registrar Compra", "📊 Historial / Editar", "🏷️ Productos", "👥 Usuarios"
+    ])
 else:
-    tab_registrar, tab_historial = st.tabs(["📝 Registrar Compra", "📊 Historial Completo"])
+    tab_dash, tab_registrar, tab_historial = st.tabs([
+        "📈 Dashboard / Auditoría", "📝 Registrar Compra", "📊 Historial Completo"
+    ])
+
+# ==========================================
+# PESTAÑA DASHBOARD (AUDITORÍA)
+# ==========================================
+with tab_dash:
+    st.subheader("📈 Resumen y Auditoría de Gastos")
+    
+    with SessionLocal() as db_session:
+        registros = (
+            db_session.query(Compra)
+            .join(Producto, Compra.producto_id == Producto.id)
+            .all()
+        )
+        
+        if not registros:
+            st.info("No hay datos suficientes para mostrar métricas. Registra algunas compras primero.")
+        else:
+            datos_dash = [{
+                "Fecha": c.fecha,
+                "Producto": c.producto.nombre,
+                "Cantidad": c.cantidad,
+                "Unidad": c.unidad,
+                "Costo": c.costo_total
+            } for c in registros]
+
+            df_dash = pd.DataFrame(datos_dash)
+            df_dash["Fecha"] = pd.to_datetime(df_dash["Fecha"])
+            
+            hoy = date.today()
+            inicio_semana = hoy - timedelta(days=hoy.weekday())
+            inicio_mes = hoy.replace(day=1)
+
+            # --- CALCULOS DE KPIS ---
+            gasto_total = df_dash["Costo"].sum()
+            gasto_diario = df_dash[df_dash["Fecha"].dt.date == hoy]["Costo"].sum()
+            gasto_semanal = df_dash[df_dash["Fecha"].dt.date >= inicio_semana]["Costo"].sum()
+            gasto_mensual = df_dash[df_dash["Fecha"].dt.date >= inicio_mes]["Costo"].sum()
+
+            # --- METRICAS PRINCIPALES ---
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Gasto Hoy", f"${gasto_diario:,.2f}")
+            m2.metric("Gasto Esta Semana", f"${gasto_semanal:,.2f}")
+            m3.metric("Gasto Este Mes", f"${gasto_mensual:,.2f}")
+            m4.metric("Gasto Histórico Total", f"${gasto_total:,.2f}")
+
+            st.markdown("---")
+
+            # --- GASTO POR PRODUCTO Y GRÁFICOS ---
+            col_g1, col_g2 = st.columns([1, 1])
+
+            with col_g1:
+                st.write("**📦 Gasto Acumulado por Producto**")
+                gasto_por_prod = df_dash.groupby("Producto")["Costo"].sum().reset_index()
+                gasto_por_prod = gasto_por_prod.sort_values(by="Costo", ascending=False)
+                
+                # Gráfico de barras de Streamlit
+                st.bar_chart(gasto_por_prod.set_index("Producto"))
+
+            with col_g2:
+                st.write("**📋 Resumen Detallado por Producto**")
+                resumen_tabla = df_dash.groupby("Producto").agg(
+                    Total_Gasto=("Costo", "sum"),
+                    Total_Compras=("Costo", "count"),
+                    Ultima_Compra=("Fecha", "max")
+                ).reset_index()
+                
+                resumen_tabla["Total_Gasto"] = resumen_tabla["Total_Gasto"].map("${:,.2f}".format)
+                resumen_tabla["Ultima_Compra"] = resumen_tabla["Ultima_Compra"].dt.strftime('%Y-%m-%d')
+                
+                st.dataframe(resumen_tabla, use_container_width=True, hide_index=True)
 
 # ==========================================
 # PESTAÑA 1: REGISTRAR COMPRA
@@ -300,7 +366,7 @@ if st.session_state.user_role == "Admin":
                                 st.rerun()
 
 # ==========================================
-# PESTAÑA 4: GESTIÓN DE USUARIOS (SOLO ADMIN)
+# PESTAÑA 4: USUARIOS (SOLO ADMIN)
 # ==========================================
     with tab_usuarios:
         st.subheader("👥 Administración de Usuarios")
@@ -338,7 +404,7 @@ if st.session_state.user_role == "Admin":
                 with col_u1:
                     st.write(f"• **{u.username.capitalize()}** ({u.role})")
                 with col_u2:
-                    if u.username != st.session_state.username: # Prevenir auto-eliminación
+                    if u.username != st.session_state.username:
                         with st.popover("🗑️ Borrar", use_container_width=True):
                             st.warning(f"¿Eliminar usuario '{u.username}'?")
                             if st.button("Confirmar", key=f"del_user_{u.id}", use_container_width=True):
