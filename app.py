@@ -13,7 +13,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 @st.cache_resource
 def get_engine():
-    return create_engine(DATABASE_URL)
+    return create_engine(DATABASE_URL, pool_pre_ping=True)
 
 engine = get_engine()
 SessionLocal = sessionmaker(bind=engine)
@@ -45,38 +45,36 @@ st.title("🧀 Control de Compras de Lácteos")
 # --- PESTAÑAS / NAVEGACIÓN ---
 tab_registrar, tab_historial = st.tabs(["📝 Registrar Compra", "📊 Historial Completo"])
 
-db_session = SessionLocal()
-
 # ==========================================
 # PESTAÑA 1: REGISTRAR COMPRA
 # ==========================================
 with tab_registrar:
-    # 1. Crear Nuevo Producto
-    with st.expander("➕ Crear Nuevo Producto (Haz clic aquí si no existe en la lista)"):
-        nuevo_prod_nombre = st.text_input("Nombre del Nuevo Producto", key="input_nuevo_prod")
-        if st.button("Guardar Producto"):
-            if nuevo_prod_nombre.strip():
-                prod_existente = db_session.query(Producto).filter(Producto.nombre.ilike(nuevo_prod_nombre.strip())).first()
-                if prod_existente:
-                    st.warning("Este producto ya existe en el sistema.")
+    with SessionLocal() as db_session:
+        # 1. Crear Nuevo Producto
+        with st.expander("➕ Crear Nuevo Producto (Haz clic aquí si no existe en la lista)"):
+            nuevo_prod_nombre = st.text_input("Nombre del Nuevo Producto", key="input_nuevo_prod")
+            if st.button("Guardar Producto"):
+                if nuevo_prod_nombre.strip():
+                    prod_existente = db_session.query(Producto).filter(Producto.nombre.ilike(nuevo_prod_nombre.strip())).first()
+                    if prod_existente:
+                        st.warning("Este producto ya existe en el sistema.")
+                    else:
+                        nuevo_p = Producto(nombre=nuevo_prod_nombre.strip())
+                        db_session.add(nuevo_p)
+                        db_session.commit()
+                        st.success(f"¡Producto '{nuevo_prod_nombre}' creado con éxito!")
+                        st.rerun()
                 else:
-                    nuevo_p = Producto(nombre=nuevo_prod_nombre.strip())
-                    db_session.add(nuevo_p)
-                    db_session.commit()
-                    st.success(f"¡Producto '{nuevo_prod_nombre}' creado con éxito!")
-                    st.rerun()
-            else:
-                st.error("Escribe un nombre válido para el producto.")
+                    st.error("Escribe un nombre válido para el producto.")
 
-    st.subheader("📝 Registrar Nueva Compra")
-    
-    productos_db = db_session.query(Producto).order_by(Producto.nombre).all()
-    opciones_productos = {p.nombre: p.id for p in productos_db}
+        st.subheader("📝 Registrar Nueva Compra")
+        
+        productos_db = db_session.query(Producto).order_by(Producto.nombre).all()
+        opciones_productos = {p.nombre: p.id for p in productos_db}
 
     if not opciones_productos:
         st.info("No hay productos registrados aún. Crea uno arriba para empezar.")
     else:
-        # Formulario de entrada
         fecha_compra = st.date_input("Fecha de Compra", value=date.today())
         producto_sel = st.selectbox("Seleccionar Producto", options=list(opciones_productos.keys()), index=None, placeholder="Elige un producto...")
         
@@ -88,7 +86,6 @@ with tab_registrar:
 
         costo_total = st.number_input("Costo Total ($)", min_value=0.0, value=0.0, step=1.0)
 
-        # Confirmación usando st.popover
         st.write("")
         with st.popover("💾 Guardar Compra", use_container_width=True):
             st.markdown("**¿Confirmar el registro de la compra?**")
@@ -102,15 +99,16 @@ with tab_registrar:
                 elif cantidad <= 0 or costo_total <= 0:
                     st.error("La cantidad y el costo deben ser mayores a 0.")
                 else:
-                    nueva_compra = Compra(
-                        fecha=fecha_compra,
-                        producto_id=opciones_productos[producto_sel],
-                        cantidad=cantidad,
-                        unidad=unidad,
-                        costo_total=costo_total
-                    )
-                    db_session.add(nueva_compra)
-                    db_session.commit()
+                    with SessionLocal() as db_session:
+                        nueva_compra = Compra(
+                            fecha=fecha_compra,
+                            producto_id=opciones_productos[producto_sel],
+                            cantidad=cantidad,
+                            unidad=unidad,
+                            costo_total=costo_total
+                        )
+                        db_session.add(nueva_compra)
+                        db_session.commit()
                     st.toast("¡Compra guardada con éxito!", icon="✅")
                     st.rerun()
 
@@ -120,9 +118,14 @@ with tab_registrar:
 with tab_historial:
     st.subheader("📊 Historial de Compras")
     
-    registros = db_session.query(Compra).join(Producto).order_by(Compra.fecha.desc(), Compra.id.desc()).all()
-    
-    if registros:
+    with SessionLocal() as db_session:
+        registros = (
+            db_session.query(Compra)
+            .join(Producto, Compra.producto_id == Producto.id)
+            .order_by(Compra.fecha.desc(), Compra.id.desc())
+            .all()
+        )
+        
         datos = [{
             "ID": c.id,
             "Fecha": c.fecha,
@@ -131,10 +134,9 @@ with tab_historial:
             "Unidad": c.unidad,
             "Costo Total ($)": f"${c.costo_total:.2f}"
         } for c in registros]
-        
+    
+    if datos:
         df = pd.DataFrame(datos)
-        
-        # Filtro rápido por producto
         filtro_prod = st.multiselect("Filtrar por producto:", options=df["Producto"].unique())
         if filtro_prod:
             df = df[df["Producto"].isin(filtro_prod)]
@@ -142,5 +144,3 @@ with tab_historial:
         st.dataframe(df, use_container_width=True, hide_index=True)
     else:
         st.info("Aún no hay compras registradas en el historial.")
-
-db_session.close()
