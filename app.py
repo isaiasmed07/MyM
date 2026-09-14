@@ -40,10 +40,60 @@ Base.metadata.create_all(bind=engine)
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Control de Compras - Lácteos", page_icon="🧀", layout="centered")
+
+# --- SISTEMA DE LOGIN Y ROLES ---
+USUARIOS = {
+    "admin": {"password": "admin123password", "role": "Admin"},
+    "usuario": {"password": "user123password", "role": "Usuario"}
+}
+
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.user_role = None
+    st.session_state.username = None
+
+def login():
+    st.title("🔐 Iniciar Sesión")
+    with st.form("login_form"):
+        user_input = st.text_input("Usuario").strip().lower()
+        pass_input = st.text_input("Contraseña", type="password")
+        submit = st.form_submit_button("Ingresar", type="primary", use_container_width=True)
+        
+        if submit:
+            if user_input in USUARIOS and USUARIOS[user_input]["password"] == pass_input:
+                st.session_state.logged_in = True
+                st.session_state.user_role = USUARIOS[user_input]["role"]
+                st.session_state.username = user_input
+                st.toast(f"¡Bienvenido, {user_input}!", icon="👋")
+                st.rerun()
+            else:
+                st.error("Usuario o contraseña incorrectos.")
+
+def logout():
+    st.session_state.logged_in = False
+    st.session_state.user_role = None
+    st.session_state.username = None
+    st.rerun()
+
+# Si no ha iniciado sesión, mostrar login y detener la ejecución
+if not st.session_state.logged_in:
+    login()
+    st.stop()
+
+# --- BARRA LATERAL (INFORMACIÓN DE SESIÓN) ---
+with st.sidebar:
+    st.write(f"👤 **Usuario:** {st.session_state.username.capitalize()}")
+    st.write(f"🔑 **Rol:** {st.session_state.user_role}")
+    if st.button("🚪 Cerrar Sesión", use_container_width=True):
+        logout()
+
 st.title("🧀 Control de Compras de Lácteos")
 
-# --- PESTAÑAS / NAVEGACIÓN ---
-tab_registrar, tab_historial, tab_productos = st.tabs(["📝 Registrar Compra", "📊 Historial / Editar", "🏷️ Productos"])
+# Definir pestañas según el rol
+if st.session_state.user_role == "Admin":
+    tab_registrar, tab_historial, tab_productos = st.tabs(["📝 Registrar Compra", "📊 Historial / Editar", "🏷️ Productos"])
+else:
+    tab_registrar, tab_historial = st.tabs(["📝 Registrar Compra", "📊 Historial Completo"])
 
 # ==========================================
 # PESTAÑA 1: REGISTRAR COMPRA
@@ -54,7 +104,7 @@ with tab_registrar:
         opciones_productos = {p.nombre: p.id for p in productos_db}
 
     if not opciones_productos:
-        st.info("No hay productos registrados aún. Ve a la pestaña '🏷️ Productos' para crear el primero.")
+        st.info("No hay productos registrados aún. Un Administrador debe crearlos en la pestaña '🏷️ Productos'.")
     else:
         st.subheader("📝 Registrar Nueva Compra")
         fecha_compra = st.date_input("Fecha de Compra", value=date.today(), key="reg_fecha")
@@ -95,7 +145,7 @@ with tab_registrar:
                     st.rerun()
 
 # ==========================================
-# PESTAÑA 2: HISTORIAL Y EDICIÓN/ELIMINACIÓN
+# PESTAÑA 2: HISTORIAL (Y EDICIÓN SI ES ADMIN)
 # ==========================================
 with tab_historial:
     st.subheader("📊 Historial de Compras")
@@ -110,7 +160,6 @@ with tab_historial:
         
         productos_list = db_session.query(Producto).order_by(Producto.nombre).all()
         dict_prod_id = {p.nombre: p.id for p in productos_list}
-        dict_prod_nombre = {p.id: p.nombre for p in productos_list}
 
         if registros:
             datos = [{
@@ -129,95 +178,96 @@ with tab_historial:
 
             st.dataframe(df, use_container_width=True, hide_index=True)
 
-            st.markdown("---")
-            st.subheader("⚙️ Modificar o Eliminar Registro")
+            # Opciones de Edición/Eliminación solo visibles para el Admin
+            if st.session_state.user_role == "Admin":
+                st.markdown("---")
+                st.subheader("⚙️ Modificar o Eliminar Registro (Admin)")
 
-            opciones_compras = {f"ID #{c.id} - {c.fecha} - {c.producto.nombre} (${c.costo_total:.2f})": c.id for c in registros}
-            compra_sel_label = st.selectbox("Selecciona un registro para editar o borrar:", options=list(opciones_compras.keys()), index=None, placeholder="Elige un registro...")
+                opciones_compras = {f"ID #{c.id} - {c.fecha} - {c.producto.nombre} (${c.costo_total:.2f})": c.id for c in registros}
+                compra_sel_label = st.selectbox("Selecciona un registro para editar o borrar:", options=list(opciones_compras.keys()), index=None, placeholder="Elige un registro...")
 
-            if compra_sel_label:
-                compra_id = opciones_compras[compra_sel_label]
-                compra_obj = db_session.query(Compra).get(compra_id)
+                if compra_sel_label:
+                    compra_id = opciones_compras[compra_sel_label]
+                    compra_obj = db_session.query(Compra).get(compra_id)
 
-                if compra_obj:
-                    with st.expander("✏️ Editar Registro", expanded=True):
-                        edit_fecha = st.date_input("Fecha", value=compra_obj.fecha, key=f"edit_f_{compra_id}")
-                        edit_prod_nombre = st.selectbox(
-                            "Producto", 
-                            options=list(dict_prod_id.keys()), 
-                            index=list(dict_prod_id.keys()).index(compra_obj.producto.nombre),
-                            key=f"edit_p_{compra_id}"
-                        )
-                        
-                        col_e1, col_e2 = st.columns(2)
-                        with col_e1:
-                            edit_cant = st.number_input("Cantidad", min_value=0.0, value=float(compra_obj.cantidad), step=0.5, key=f"edit_c_{compra_id}")
-                        with col_e2:
-                            unidades_lista = ["Libras", "Kilos", "Unidades", "Bloques", "Litros"]
-                            edit_uni = st.selectbox("Unidad", options=unidades_lista, index=unidades_lista.index(compra_obj.unidad) if compra_obj.unidad in unidades_lista else 0, key=f"edit_u_{compra_id}")
-                        
-                        edit_costo = st.number_input("Costo Total ($)", min_value=0.0, value=float(compra_obj.costo_total), step=1.0, key=f"edit_cost_{compra_id}")
+                    if compra_obj:
+                        with st.expander("✏️ Editar Registro", expanded=True):
+                            edit_fecha = st.date_input("Fecha", value=compra_obj.fecha, key=f"edit_f_{compra_id}")
+                            edit_prod_nombre = st.selectbox(
+                                "Producto", 
+                                options=list(dict_prod_id.keys()), 
+                                index=list(dict_prod_id.keys()).index(compra_obj.producto.nombre),
+                                key=f"edit_p_{compra_id}"
+                            )
+                            
+                            col_e1, col_e2 = st.columns(2)
+                            with col_e1:
+                                edit_cant = st.number_input("Cantidad", min_value=0.0, value=float(compra_obj.cantidad), step=0.5, key=f"edit_c_{compra_id}")
+                            with col_e2:
+                                unidades_lista = ["Libras", "Kilos", "Unidades", "Bloques", "Litros"]
+                                edit_uni = st.selectbox("Unidad", options=unidades_lista, index=unidades_lista.index(compra_obj.unidad) if compra_obj.unidad in unidades_lista else 0, key=f"edit_u_{compra_id}")
+                            
+                            edit_costo = st.number_input("Costo Total ($)", min_value=0.0, value=float(compra_obj.costo_total), step=1.0, key=f"edit_cost_{compra_id}")
 
-                        col_btn1, col_btn2 = st.columns([1, 1])
-                        with col_btn1:
-                            if st.button("💾 Actualizar Registro", type="primary", use_container_width=True, key=f"btn_upd_{compra_id}"):
-                                compra_obj.fecha = edit_fecha
-                                compra_obj.producto_id = dict_prod_id[edit_prod_nombre]
-                                compra_obj.cantidad = edit_cant
-                                compra_obj.unidad = edit_uni
-                                compra_obj.costo_total = edit_costo
-                                db_session.commit()
-                                st.toast("¡Registro actualizado correctamente!", icon="✏️")
-                                st.rerun()
-                        
-                        with col_btn2:
-                            with st.popover("🗑️ Eliminar Registro", use_container_width=True):
-                                st.warning(f"¿Seguro que deseas eliminar la compra ID #{compra_id}?")
-                                if st.button("Sí, Eliminar Definitivamente", type="primary", use_container_width=True, key=f"btn_del_{compra_id}"):
-                                    db_session.delete(compra_obj)
+                            col_btn1, col_btn2 = st.columns([1, 1])
+                            with col_btn1:
+                                if st.button("💾 Actualizar Registro", type="primary", use_container_width=True, key=f"btn_upd_{compra_id}"):
+                                    compra_obj.fecha = edit_fecha
+                                    compra_obj.producto_id = dict_prod_id[edit_prod_nombre]
+                                    compra_obj.cantidad = edit_cant
+                                    compra_obj.unidad = edit_uni
+                                    compra_obj.costo_total = edit_costo
                                     db_session.commit()
-                                    st.toast("Registro eliminado.", icon="🗑️")
+                                    st.toast("¡Registro actualizado correctamente!", icon="✏️")
                                     st.rerun()
+                            
+                            with col_btn2:
+                                with st.popover("🗑️ Eliminar Registro", use_container_width=True):
+                                    st.warning(f"¿Seguro que deseas eliminar la compra ID #{compra_id}?")
+                                    if st.button("Sí, Eliminar Definitivamente", type="primary", use_container_width=True, key=f"btn_del_{compra_id}"):
+                                        db_session.delete(compra_obj)
+                                        db_session.commit()
+                                        st.toast("Registro eliminado.", icon="🗑️")
+                                        st.rerun()
         else:
             st.info("Aún no hay compras registradas en el historial.")
 
 # ==========================================
-# PESTAÑA 3: GESTIÓN DE PRODUCTOS
+# PESTAÑA 3: GESTIÓN DE PRODUCTOS (SOLO ADMIN)
 # ==========================================
-with tab_productos:
-    st.subheader("🏷️ Administración de Productos")
-    
-    with SessionLocal() as db_session:
-        # Crear producto
-        with st.form("form_nuevo_prod", clear_on_submit=True):
-            n_nombre = st.text_input("Nombre del Nuevo Producto")
-            if st.form_submit_button("➕ Crear Producto"):
-                if n_nombre.strip():
-                    prod_existente = db_session.query(Producto).filter(Producto.nombre.ilike(n_nombre.strip())).first()
-                    if prod_existente:
-                        st.warning("Este producto ya existe.")
-                    else:
-                        db_session.add(Producto(nombre=n_nombre.strip()))
-                        db_session.commit()
-                        st.toast(f"Producto '{n_nombre}' creado con éxito.", icon="✅")
-                        st.rerun()
-                else:
-                    st.error("Ingresa un nombre válido.")
-
-        st.markdown("---")
-        # Listar y borrar productos
-        prods = db_session.query(Producto).order_by(Producto.nombre).all()
-        if prods:
-            st.write("**Productos Registrados:**")
-            for p in prods:
-                col_p1, col_p2 = st.columns([3, 1])
-                with col_p1:
-                    st.write(f"• **{p.nombre}**")
-                with col_p2:
-                    with st.popover("🗑️ Borrar", use_container_width=True):
-                        st.warning(f"Borrar '{p.nombre}' eliminará también sus compras asociadas.")
-                        if st.button("Confirmar", key=f"del_prod_{p.id}", use_container_width=True):
-                            db_session.delete(p)
+if st.session_state.user_role == "Admin":
+    with tab_productos:
+        st.subheader("🏷️ Administración de Productos (Admin)")
+        
+        with SessionLocal() as db_session:
+            with st.form("form_nuevo_prod", clear_on_submit=True):
+                n_nombre = st.text_input("Nombre del Nuevo Producto")
+                if st.form_submit_button("➕ Crear Producto"):
+                    if n_nombre.strip():
+                        prod_existente = db_session.query(Producto).filter(Producto.nombre.ilike(n_nombre.strip())).first()
+                        if prod_existente:
+                            st.warning("Este producto ya existe.")
+                        else:
+                            db_session.add(Producto(nombre=n_nombre.strip()))
                             db_session.commit()
-                            st.toast(f"Producto '{p.nombre}' eliminado.", icon="🗑️")
+                            st.toast(f"Producto '{n_nombre}' creado con éxito.", icon="✅")
                             st.rerun()
+                    else:
+                        st.error("Ingresa un nombre válido.")
+
+            st.markdown("---")
+            prods = db_session.query(Producto).order_by(Producto.nombre).all()
+            if prods:
+                st.write("**Productos Registrados:**")
+                for p in prods:
+                    col_p1, col_p2 = st.columns([3, 1])
+                    with col_p1:
+                        st.write(f"• **{p.nombre}**")
+                    with col_p2:
+                        with st.popover("🗑️ Borrar", use_container_width=True):
+                            st.warning(f"Borrar '{p.nombre}' eliminará también sus compras asociadas.")
+                            if st.button("Confirmar", key=f"del_prod_{p.id}", use_container_width=True):
+                                db_session.delete(p)
+                                db_session.commit()
+                                st.toast(f"Producto '{p.nombre}' eliminado.", icon="🗑️")
+                                st.rerun()
